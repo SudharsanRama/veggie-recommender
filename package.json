@@ -1,0 +1,22 @@
+{
+  "name": "veggie-picker",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview",
+    "seed": "tsx scripts/seed.ts"
+  },
+  "devDependencies": {
+    "tsx": "^4.21.0",
+    "typescript": "~5.9.3",
+    "vite": "^7.1.2"
+  },
+  "dependencies": {
+    "@instantdb/admin": "latest",
+    "@instantdb/core": "latest"
+  },
+  "packageManager": "npm@11.6.0"
+}
