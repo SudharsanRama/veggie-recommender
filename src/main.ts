@@ -125,10 +125,34 @@ async function generateSuggestions() {
   const now = Date.now();
   const cooldownMs = config.cooldownDays * 24 * 60 * 60 * 1000;
 
-  const eligibleItems = items.filter((item: Item) => {
+  let eligibleItems = items.filter((item: Item) => {
     if (!item.lastSuggestedAt) return true;
     return now - Number(item.lastSuggestedAt) > cooldownMs;
   });
+
+  // Nothing eligible — reset cooldowns from the most recent suggestion so
+  // the user always gets a list (small libraries exhaust the cooldown pool fast)
+  if (eligibleItems.length === 0 && items.length > 0) {
+    const latest = await db.queryOnce({
+      suggestions: {
+        $: {
+          where: { "session.sessionId": localSessionId },
+          order: { generatedAt: "desc" },
+          limit: 1,
+        },
+        items: {},
+      },
+    });
+    const recent = latest.data?.suggestions?.[0];
+    if (recent) {
+      const resetTxs: any[] = [db.tx.suggestions[recent.id].delete()];
+      for (const item of recent.items || []) {
+        resetTxs.push(db.tx.items[item.id].update({ lastSuggestedAt: null } as any));
+      }
+      await db.transact(resetTxs);
+    }
+    eligibleItems = items; // full pool is now eligible
+  }
 
   const itemsByCategory = eligibleItems.reduce(
     (acc: Record<string, Item[]>, item: Item) => {
