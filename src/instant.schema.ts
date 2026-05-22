@@ -4,37 +4,68 @@ import { i } from "@instantdb/core";
 
 const _schema = i.schema({
   entities: {
-    items: i.entity({
-      name: i.string(),
-      type: i.string().indexed(), // 'vegetable' or 'fruit'
-      category: i.string().indexed(), // 'leafy', 'root', 'fruit', etc.
-      enabled: i.boolean().indexed(),
-      lastSuggestedAt: i.number().indexed().optional(),
-      createdAt: i.number().indexed(),
+    $files: i.entity({
+      path: i.string().unique().indexed(),
+      url: i.string(),
     }),
-    suggestions: i.entity({
-      generatedAt: i.number().indexed(),
+    $users: i.entity({
+      email: i.string().unique().indexed().optional(),
+      imageURL: i.string().optional(),
+      type: i.string().optional(),
+    }),
+    sessions: i.entity({
+      sessionId: i.string().unique().indexed(),
+      lastVisitedAt: i.date().indexed(),
+    }),
+    items: i.entity({
+      category: i.string().indexed(),
+      createdAt: i.date().indexed(),
+      enabled: i.boolean().indexed(),
+      lastSuggestedAt: i.date().indexed().optional(),
+      name: i.string(),
+      type: i.string().indexed(),
     }),
     settings: i.entity({
-      itemsPerCategory: i.number(),
       cooldownDays: i.number(),
-      updatedAt: i.number(),
+      itemsPerCategory: i.number(),
+      updatedAt: i.date(),
+    }),
+    suggestions: i.entity({
+      generatedAt: i.date().indexed(),
     }),
   },
   links: {
-    suggestionItems: {
+    $usersLinkedPrimaryUser: {
       forward: {
-        on: "suggestions",
-        has: "many",
-        label: "items",
+        on: "$users",
+        has: "one",
+        label: "linkedPrimaryUser",
+        onDelete: "cascade",
       },
       reverse: {
-        on: "items",
+        on: "$users",
         has: "many",
-        label: "suggestions",
+        label: "linkedGuestUsers",
       },
     },
+    suggestionsItems: {
+      forward: { on: "suggestions", has: "many", label: "items" },
+      reverse: { on: "items", has: "many", label: "suggestions" },
+    },
+    sessionItems: {
+      forward: { on: "items", has: "one", label: "session", onDelete: "cascade" },
+      reverse: { on: "sessions", has: "many", label: "items" },
+    },
+    sessionSettings: {
+      forward: { on: "settings", has: "one", label: "session", onDelete: "cascade" },
+      reverse: { on: "sessions", has: "many", label: "settings" },
+    },
+    sessionSuggestions: {
+      forward: { on: "suggestions", has: "one", label: "session", onDelete: "cascade" },
+      reverse: { on: "sessions", has: "many", label: "suggestions" },
+    },
   },
+  rooms: {},
 });
 
 // This helps Typescript display nicer intellisense

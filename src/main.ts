@@ -7,134 +7,170 @@ type Item = InstaQLEntity<AppSchema, "items">;
 type Suggestion = InstaQLEntity<AppSchema, "suggestions", { items: {} }>;
 type Settings = InstaQLEntity<AppSchema, "settings">;
 
-// State
+const SESSION_KEY = "veggie_session_id";
+const SESSION_TTL_DAYS = 30;
+
+// UI state
 let currentScreen: "home" | "manage" | "settings" = "home";
 let filterType: string = "all";
 let filterCategory: string = "all";
 
-// Initialize settings if not exists
-async function initializeSettings() {
-  const result = await db.queryOnce({ settings: {} });
+// Session state — set during bootstrap before any DB writes
+let currentDbSessionId: string;
+
+function getLocalSessionId(): string {
+  let sid = localStorage.getItem(SESSION_KEY);
+  if (!sid) {
+    sid = id();
+    localStorage.setItem(SESSION_KEY, sid);
+  }
+  return sid;
+}
+
+const localSessionId = getLocalSessionId();
+
+async function initSession(): Promise<string> {
+  const result = await db.queryOnce({
+    sessions: { $: { where: { sessionId: localSessionId } } },
+  });
+
+  const now = Date.now();
+
+  if (result.data.sessions.length > 0) {
+    const session = result.data.sessions[0];
+    await db.transact(db.tx.sessions[session.id].update({ lastVisitedAt: now }));
+    return session.id;
+  }
+
+  const sessionDbId = id();
+  await db.transact(
+    db.tx.sessions[sessionDbId].update({ sessionId: localSessionId, lastVisitedAt: now })
+  );
+  return sessionDbId;
+}
+
+async function cleanupOldSessions(): Promise<void> {
+  const cutoff = new Date(Date.now() - SESSION_TTL_DAYS * 24 * 60 * 60 * 1000);
+  const result = await db.queryOnce({
+    sessions: { $: { where: { lastVisitedAt: { $lt: cutoff } } } },
+  });
+  const old = result.data?.sessions ?? [];
+  if (old.length === 0) return;
+  await db.transact(old.map((s) => db.tx.sessions[s.id].delete()));
+}
+
+async function initializeSettings(): Promise<void> {
+  const result = await db.queryOnce({
+    settings: { $: { where: { "session.sessionId": localSessionId } } },
+  });
   if (result.data.settings.length === 0) {
-    await db.transact(
-      db.tx.settings[id()].update({
+    const settingsId = id();
+    await db.transact([
+      db.tx.settings[settingsId].update({
         itemsPerCategory: 2,
         cooldownDays: 7,
         updatedAt: Date.now(),
-      })
-    );
+      }),
+      db.tx.settings[settingsId].link({ session: currentDbSessionId }),
+    ]);
   }
 }
 
-initializeSettings();
-
-// Subscribe to data
-db.subscribeQuery(
-  {
-    items: {},
-    suggestions: {
-      $: {
-        order: { generatedAt: "desc" },
-        limit: 1,
+function subscribeToData(): void {
+  db.subscribeQuery(
+    {
+      items: { $: { where: { "session.sessionId": localSessionId } } },
+      suggestions: {
+        $: {
+          where: { "session.sessionId": localSessionId },
+          order: { generatedAt: "desc" },
+          limit: 1,
+        },
+        items: {},
       },
-      items: {},
+      settings: { $: { where: { "session.sessionId": localSessionId } } },
     },
-    settings: {},
-  },
-  (resp) => {
-    if (resp.error) {
-      renderError(resp.error.message);
-      return;
+    (resp) => {
+      if (resp.error) {
+        renderError(resp.error.message);
+        return;
+      }
+      if (resp.data) {
+        render(resp.data);
+      }
     }
-    if (resp.data) {
-      render(resp.data);
-    }
-  }
-);
+  );
+}
+
+async function bootstrap(): Promise<void> {
+  renderLoading();
+  currentDbSessionId = await initSession();
+  cleanupOldSessions().catch(console.error);
+  await initializeSettings();
+  subscribeToData();
+}
+
+bootstrap();
 
 // Core suggestion logic
 async function generateSuggestions() {
   const result = await db.queryOnce({
-    items: {
-      $: {
-        where: { enabled: true },
-      },
-    },
-    settings: {},
+    items: { $: { where: { "session.sessionId": localSessionId } } },
+    settings: { $: { where: { "session.sessionId": localSessionId } } },
   });
-  
-  const items = result.data.items;
-  const settings = result.data.settings;
 
+  const items = result.data.items.filter((item: Item) => item.enabled);
+  const settings = result.data.settings;
   const config = settings[0] || { itemsPerCategory: 2, cooldownDays: 7 };
   const now = Date.now();
   const cooldownMs = config.cooldownDays * 24 * 60 * 60 * 1000;
 
-  // Filter out items in cooldown
   const eligibleItems = items.filter((item: Item) => {
     if (!item.lastSuggestedAt) return true;
-    return now - item.lastSuggestedAt > cooldownMs;
+    return now - Number(item.lastSuggestedAt) > cooldownMs;
   });
 
-  // Group by category
-  const itemsByCategory = eligibleItems.reduce((acc: Record<string, Item[]>, item: Item) => {
-    if (!acc[item.category]) acc[item.category] = [];
-    acc[item.category].push(item);
-    return acc;
-  }, {} as Record<string, Item[]>);
+  const itemsByCategory = eligibleItems.reduce(
+    (acc: Record<string, Item[]>, item: Item) => {
+      if (!acc[item.category]) acc[item.category] = [];
+      acc[item.category].push(item);
+      return acc;
+    },
+    {} as Record<string, Item[]>
+  );
 
-  // Select items per category
   const selectedItems: Item[] = [];
   Object.values(itemsByCategory).forEach((categoryItems: Item[]) => {
-    // Sort by lastSuggestedAt (null first, then oldest first)
     categoryItems.sort((a: Item, b: Item) => {
       if (!a.lastSuggestedAt && !b.lastSuggestedAt) return 0;
       if (!a.lastSuggestedAt) return -1;
       if (!b.lastSuggestedAt) return 1;
-      return a.lastSuggestedAt - b.lastSuggestedAt;
+      return Number(a.lastSuggestedAt) - Number(b.lastSuggestedAt);
     });
-
-    // Take up to N items
     selectedItems.push(...categoryItems.slice(0, config.itemsPerCategory));
   });
 
-  // Create suggestion and link items
   const suggestionId = id();
   const txs: any[] = [
-    db.tx.suggestions[suggestionId].update({
-      generatedAt: now,
-    }),
+    db.tx.suggestions[suggestionId].update({ generatedAt: now }),
+    db.tx.suggestions[suggestionId].link({ session: currentDbSessionId }),
   ];
 
-  // Update lastSuggestedAt for selected items and link them
   selectedItems.forEach((item) => {
-    txs.push(
-      db.tx.items[item.id].update({ lastSuggestedAt: now })
-    );
-    txs.push(
-      db.tx.items[item.id].link({ suggestions: suggestionId })
-    );
+    txs.push(db.tx.items[item.id].update({ lastSuggestedAt: now }));
+    txs.push(db.tx.items[item.id].link({ suggestions: suggestionId }));
   });
 
   await db.transact(txs);
 }
 
 // Item management
-async function addItem(
-  name: string,
-  type: string,
-  category: string,
-  enabled: boolean = true
-) {
-  await db.transact(
-    db.tx.items[id()].update({
-      name,
-      type,
-      category,
-      enabled,
-      createdAt: Date.now(),
-    })
-  );
+async function addItem(name: string, type: string, category: string, enabled = true) {
+  const itemId = id();
+  await db.transact([
+    db.tx.items[itemId].update({ name, type, category, enabled, createdAt: Date.now() }),
+    db.tx.items[itemId].link({ session: currentDbSessionId }),
+  ]);
 }
 
 async function updateItem(item: Item, updates: Partial<Item>) {
@@ -145,27 +181,30 @@ async function deleteItem(item: Item) {
   await db.transact(db.tx.items[item.id].delete());
 }
 
-// Settings management
 async function updateSettings(itemsPerCategory: number, cooldownDays: number) {
-  const result = await db.queryOnce({ settings: {} });
+  const result = await db.queryOnce({
+    settings: { $: { where: { "session.sessionId": localSessionId } } },
+  });
   const settings = result.data.settings;
   if (settings.length > 0) {
     await db.transact(
-      db.tx.settings[settings[0].id].update({
-        itemsPerCategory,
-        cooldownDays,
-        updatedAt: Date.now(),
-      })
+      db.tx.settings[settings[0].id].update({ itemsPerCategory, cooldownDays, updatedAt: Date.now() })
     );
   }
 }
 
 // Render functions
-function render(data: {
-  items: Item[];
-  suggestions: Suggestion[];
-  settings: Settings[];
-}) {
+function renderLoading() {
+  const app = document.getElementById("app")!;
+  app.innerHTML = `
+    <div class="loading-screen">
+      <div class="loading-spinner"></div>
+      <p>Loading your garden...</p>
+    </div>
+  `;
+}
+
+function render(data: { items: Item[]; suggestions: Suggestion[]; settings: Settings[] }) {
   const app = document.getElementById("app")!;
 
   app.innerHTML = `
@@ -173,18 +212,11 @@ function render(data: {
       <header>
         <h1>🥬 Veggie Picker</h1>
         <nav>
-          <button class="nav-btn ${currentScreen === "home" ? "active" : ""}" data-screen="home">
-            Home
-          </button>
-          <button class="nav-btn ${currentScreen === "manage" ? "active" : ""}" data-screen="manage">
-            Manage Items
-          </button>
-          <button class="nav-btn ${currentScreen === "settings" ? "active" : ""}" data-screen="settings">
-            Settings
-          </button>
+          <button class="nav-btn ${currentScreen === "home" ? "active" : ""}" data-screen="home">Home</button>
+          <button class="nav-btn ${currentScreen === "manage" ? "active" : ""}" data-screen="manage">Manage Items</button>
+          <button class="nav-btn ${currentScreen === "settings" ? "active" : ""}" data-screen="settings">Settings</button>
         </nav>
       </header>
-
       <main>
         ${
           currentScreen === "home"
@@ -200,11 +232,7 @@ function render(data: {
   attachEventListeners(data);
 }
 
-function renderHomeScreen(data: {
-  items: Item[];
-  suggestions: Suggestion[];
-  settings: Settings[];
-}) {
+function renderHomeScreen(data: { items: Item[]; suggestions: Suggestion[]; settings: Settings[] }) {
   const latestSuggestion = data.suggestions[0];
 
   if (!latestSuggestion || !latestSuggestion.items) {
@@ -214,9 +242,7 @@ function renderHomeScreen(data: {
           <div class="icon">🛒</div>
           <h2>No suggestions yet</h2>
           <p>Generate your first shopping list to get started!</p>
-          <button class="btn-primary btn-generate">
-            Generate Today's List
-          </button>
+          <button class="btn-primary btn-generate">Generate Today's List</button>
         </div>
       </div>
     `;
@@ -235,11 +261,8 @@ function renderHomeScreen(data: {
           <h2>Today's Shopping List</h2>
           <p class="timestamp">Generated ${new Date(latestSuggestion.generatedAt).toLocaleString()}</p>
         </div>
-        <button class="btn-primary btn-generate">
-          Regenerate List
-        </button>
+        <button class="btn-primary btn-generate">Regenerate List</button>
       </div>
-
       <div class="suggestions-grid">
         ${Object.entries(itemsByCategory)
           .map(
@@ -249,8 +272,7 @@ function renderHomeScreen(data: {
             <ul class="item-list">
               ${items.map((item) => `<li><span class="item-type-badge ${item.type}">${item.type === "vegetable" ? "🥕" : "🍎"}</span> ${item.name}</li>`).join("")}
             </ul>
-          </div>
-        `
+          </div>`
           )
           .join("")}
       </div>
@@ -258,15 +280,10 @@ function renderHomeScreen(data: {
   `;
 }
 
-function renderManageScreen(data: {
-  items: Item[];
-  suggestions: Suggestion[];
-  settings: Settings[];
-}) {
+function renderManageScreen(data: { items: Item[]; suggestions: Suggestion[]; settings: Settings[] }) {
   const filteredItems = data.items.filter((item) => {
     if (filterType !== "all" && item.type !== filterType) return false;
-    if (filterCategory !== "all" && item.category !== filterCategory)
-      return false;
+    if (filterCategory !== "all" && item.category !== filterCategory) return false;
     return true;
   });
 
@@ -285,7 +302,6 @@ function renderManageScreen(data: {
           <option value="vegetable" ${filterType === "vegetable" ? "selected" : ""}>Vegetables</option>
           <option value="fruit" ${filterType === "fruit" ? "selected" : ""}>Fruits</option>
         </select>
-
         <select class="filter-select" id="filter-category">
           <option value="all">All Categories</option>
           ${categories.map((cat) => `<option value="${cat}" ${filterCategory === cat ? "selected" : ""}>${capitalizeFirst(cat)}</option>`).join("")}
@@ -296,12 +312,7 @@ function renderManageScreen(data: {
         <table>
           <thead>
             <tr>
-              <th>Name</th>
-              <th>Type</th>
-              <th>Category</th>
-              <th>Last Suggested</th>
-              <th>Status</th>
-              <th>Actions</th>
+              <th>Name</th><th>Type</th><th>Category</th><th>Last Suggested</th><th>Status</th><th>Actions</th>
             </tr>
           </thead>
           <tbody>
@@ -324,8 +335,7 @@ function renderManageScreen(data: {
                   <button class="btn-icon btn-edit" data-item-id="${item.id}">✏️</button>
                   <button class="btn-icon btn-delete" data-item-id="${item.id}">🗑️</button>
                 </td>
-              </tr>
-            `
+              </tr>`
               )
               .join("")}
           </tbody>
@@ -337,12 +347,10 @@ function renderManageScreen(data: {
       <form id="item-form">
         <h3 id="dialog-title">Add Item</h3>
         <input type="hidden" id="edit-item-id">
-        
         <label>
           Name
           <input type="text" id="item-name" required placeholder="e.g., Spinach">
         </label>
-
         <label>
           Type
           <select id="item-type" required>
@@ -350,12 +358,10 @@ function renderManageScreen(data: {
             <option value="fruit">Fruit</option>
           </select>
         </label>
-
         <label>
           Category
           <input type="text" id="item-category" required placeholder="e.g., leafy, root, citrus">
         </label>
-
         <div class="dialog-actions">
           <button type="button" class="btn-secondary" id="cancel-btn">Cancel</button>
           <button type="submit" class="btn-primary">Save</button>
@@ -365,17 +371,12 @@ function renderManageScreen(data: {
   `;
 }
 
-function renderSettingsScreen(data: {
-  items: Item[];
-  suggestions: Suggestion[];
-  settings: Settings[];
-}) {
+function renderSettingsScreen(data: { items: Item[]; suggestions: Suggestion[]; settings: Settings[] }) {
   const settings = data.settings[0] || { itemsPerCategory: 2, cooldownDays: 7 };
 
   return `
     <div class="settings-screen">
       <h2>Settings</h2>
-      
       <form id="settings-form" class="settings-form">
         <div class="setting-group">
           <label>
@@ -384,7 +385,6 @@ function renderSettingsScreen(data: {
             <input type="number" id="items-per-category" value="${settings.itemsPerCategory}" min="1" max="10" required>
           </label>
         </div>
-
         <div class="setting-group">
           <label>
             <span class="label-text">Cooldown Days</span>
@@ -392,7 +392,6 @@ function renderSettingsScreen(data: {
             <input type="number" id="cooldown-days" value="${settings.cooldownDays}" min="0" max="30" required>
           </label>
         </div>
-
         <button type="submit" class="btn-primary">Save Settings</button>
       </form>
 
@@ -417,154 +416,92 @@ function renderSettingsScreen(data: {
   `;
 }
 
-function attachEventListeners(data: {
-  items: Item[];
-  suggestions: Suggestion[];
-  settings: Settings[];
-}) {
-  // Navigation
+function attachEventListeners(data: { items: Item[]; suggestions: Suggestion[]; settings: Settings[] }) {
   document.querySelectorAll(".nav-btn").forEach((btn) => {
     btn.addEventListener("click", (e) => {
-      const target = e.target as HTMLElement;
-      currentScreen = target.dataset.screen as any;
-      render(data); // Re-render to show the new screen
+      currentScreen = (e.target as HTMLElement).dataset.screen as typeof currentScreen;
+      render(data);
     });
   });
 
-  // Home screen
   const generateBtn = document.querySelector(".btn-generate");
   if (generateBtn) {
     generateBtn.addEventListener("click", () => generateSuggestions());
   }
 
-  // Manage screen
   if (currentScreen === "manage") {
-    const addBtn = document.getElementById("add-item-btn");
-    if (addBtn) {
-      addBtn.addEventListener("click", () => showItemDialog());
-    }
+    document.getElementById("add-item-btn")?.addEventListener("click", () => showItemDialog());
 
     document.getElementById("filter-type")?.addEventListener("change", (e) => {
       filterType = (e.target as HTMLSelectElement).value;
-      render(data); // Re-render to apply filter
+      render(data);
     });
 
-    document
-      .getElementById("filter-category")
-      ?.addEventListener("change", (e) => {
-        filterCategory = (e.target as HTMLSelectElement).value;
-        render(data); // Re-render to apply filter
-      });
+    document.getElementById("filter-category")?.addEventListener("change", (e) => {
+      filterCategory = (e.target as HTMLSelectElement).value;
+      render(data);
+    });
 
     document.querySelectorAll(".toggle-enabled").forEach((toggle) => {
       toggle.addEventListener("change", (e) => {
         const target = e.target as HTMLInputElement;
-        const itemId = target.dataset.itemId!;
-        const item = data.items.find((i) => i.id === itemId)!;
+        const item = data.items.find((i) => i.id === target.dataset.itemId)!;
         updateItem(item, { enabled: target.checked });
       });
     });
 
     document.querySelectorAll(".btn-edit").forEach((btn) => {
       btn.addEventListener("click", (e) => {
-        const target = e.target as HTMLElement;
-        const itemId = target.dataset.itemId!;
-        const item = data.items.find((i) => i.id === itemId)!;
-        showItemDialog(item);
+        const itemId = (e.target as HTMLElement).dataset.itemId!;
+        showItemDialog(data.items.find((i) => i.id === itemId)!);
       });
     });
 
     document.querySelectorAll(".btn-delete").forEach((btn) => {
       btn.addEventListener("click", (e) => {
-        const target = e.target as HTMLElement;
-        const itemId = target.dataset.itemId!;
+        const itemId = (e.target as HTMLElement).dataset.itemId!;
         const item = data.items.find((i) => i.id === itemId)!;
-        if (confirm(`Delete ${item.name}?`)) {
-          deleteItem(item);
-        }
+        if (confirm(`Delete ${item.name}?`)) deleteItem(item);
       });
     });
 
     const dialog = document.getElementById("item-dialog") as HTMLDialogElement;
-    const form = document.getElementById("item-form");
-    const cancelBtn = document.getElementById("cancel-btn");
+    document.getElementById("cancel-btn")?.addEventListener("click", () => dialog.close());
 
-    if (cancelBtn) {
-      cancelBtn.addEventListener("click", () => dialog.close());
-    }
+    document.getElementById("item-form")?.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const editId = (document.getElementById("edit-item-id") as HTMLInputElement).value;
+      const name = (document.getElementById("item-name") as HTMLInputElement).value;
+      const type = (document.getElementById("item-type") as HTMLSelectElement).value;
+      const category = (document.getElementById("item-category") as HTMLInputElement).value;
 
-    if (form) {
-      form.addEventListener("submit", async (e) => {
-        e.preventDefault();
-        const editId = (
-          document.getElementById("edit-item-id") as HTMLInputElement
-        ).value;
-        const name = (document.getElementById("item-name") as HTMLInputElement)
-          .value;
-        const type = (
-          document.getElementById("item-type") as HTMLSelectElement
-        ).value;
-        const category = (
-          document.getElementById("item-category") as HTMLInputElement
-        ).value;
-
-        if (editId) {
-          const item = data.items.find((i) => i.id === editId)!;
-          await updateItem(item, { name, type, category });
-        } else {
-          await addItem(name, type, category);
-        }
-
-        dialog.close();
-      });
-    }
+      if (editId) {
+        await updateItem(data.items.find((i) => i.id === editId)!, { name, type, category });
+      } else {
+        await addItem(name, type, category);
+      }
+      dialog.close();
+    });
   }
 
-  // Settings screen
   if (currentScreen === "settings") {
-    const settingsForm = document.getElementById("settings-form");
-    if (settingsForm) {
-      settingsForm.addEventListener("submit", async (e) => {
-        e.preventDefault();
-        const itemsPerCategory = parseInt(
-          (
-            document.getElementById("items-per-category") as HTMLInputElement
-          ).value
-        );
-        const cooldownDays = parseInt(
-          (document.getElementById("cooldown-days") as HTMLInputElement).value
-        );
-        await updateSettings(itemsPerCategory, cooldownDays);
-        alert("Settings saved!");
-      });
-    }
+    document.getElementById("settings-form")?.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const itemsPerCategory = parseInt((document.getElementById("items-per-category") as HTMLInputElement).value);
+      const cooldownDays = parseInt((document.getElementById("cooldown-days") as HTMLInputElement).value);
+      await updateSettings(itemsPerCategory, cooldownDays);
+      alert("Settings saved!");
+    });
   }
 }
 
 function showItemDialog(item?: Item) {
   const dialog = document.getElementById("item-dialog") as HTMLDialogElement;
-  const title = document.getElementById("dialog-title")!;
-  const editId = document.getElementById("edit-item-id") as HTMLInputElement;
-  const nameInput = document.getElementById("item-name") as HTMLInputElement;
-  const typeInput = document.getElementById("item-type") as HTMLSelectElement;
-  const categoryInput = document.getElementById(
-    "item-category"
-  ) as HTMLInputElement;
-
-  if (item) {
-    title.textContent = "Edit Item";
-    editId.value = item.id;
-    nameInput.value = item.name;
-    typeInput.value = item.type;
-    categoryInput.value = item.category;
-  } else {
-    title.textContent = "Add Item";
-    editId.value = "";
-    nameInput.value = "";
-    typeInput.value = "vegetable";
-    categoryInput.value = "";
-  }
-
+  (document.getElementById("dialog-title")!).textContent = item ? "Edit Item" : "Add Item";
+  (document.getElementById("edit-item-id") as HTMLInputElement).value = item?.id ?? "";
+  (document.getElementById("item-name") as HTMLInputElement).value = item?.name ?? "";
+  (document.getElementById("item-type") as HTMLSelectElement).value = item?.type ?? "vegetable";
+  (document.getElementById("item-category") as HTMLInputElement).value = item?.category ?? "";
   dialog.showModal();
 }
 
@@ -573,8 +510,7 @@ function capitalizeFirst(str: string) {
 }
 
 function renderError(message: string) {
-  const app = document.getElementById("app")!;
-  app.innerHTML = `
+  document.getElementById("app")!.innerHTML = `
     <div class="error">
       <h2>Error</h2>
       <p>${message}</p>
