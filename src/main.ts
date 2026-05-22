@@ -233,15 +233,53 @@ function render(data: { items: Item[]; suggestions: Suggestion[]; settings: Sett
 }
 
 function renderHomeScreen(data: { items: Item[]; suggestions: Suggestion[]; settings: Settings[] }) {
+  if (data.items.length === 0) {
+    return `
+      <div class="home-screen">
+        <div class="onboarding">
+          <div class="onboarding-hero">
+            <div class="onboarding-icon">🥬</div>
+            <h2>Welcome to Veggie Picker</h2>
+            <p class="onboarding-subtitle">Your personal produce planner — get a fresh, varied shopping list every week without the mental load.</p>
+          </div>
+          <div class="onboarding-features">
+            <div class="feature-card">
+              <span class="feature-icon">🔄</span>
+              <div>
+                <strong>Smart rotation</strong>
+                <p>Items on cooldown are skipped so you're never buying the same thing two weeks running.</p>
+              </div>
+            </div>
+            <div class="feature-card">
+              <span class="feature-icon">🗂️</span>
+              <div>
+                <strong>Category-aware</strong>
+                <p>Picks a balanced spread across leafy greens, roots, fruits, and more.</p>
+              </div>
+            </div>
+            <div class="feature-card">
+              <span class="feature-icon">✏️</span>
+              <div>
+                <strong>Fully yours</strong>
+                <p>Add, remove, or disable anything. The list reflects exactly what you like.</p>
+              </div>
+            </div>
+          </div>
+          <button class="btn-primary btn-get-started">Add Your First Items →</button>
+        </div>
+      </div>
+    `;
+  }
+
   const latestSuggestion = data.suggestions[0];
 
-  if (!latestSuggestion || !latestSuggestion.items) {
+  if (!latestSuggestion || !latestSuggestion.items?.length) {
     return `
       <div class="home-screen">
         <div class="empty-state">
           <div class="icon">🛒</div>
-          <h2>No suggestions yet</h2>
-          <p>Generate your first shopping list to get started!</p>
+          <h2>Ready to go!</h2>
+          <p>You have ${data.items.length} item${data.items.length === 1 ? "" : "s"} in your list. Generate your first shopping list whenever you're ready.</p>
           <button class="btn-primary btn-generate">Generate Today's List</button>
         </div>
       </div>
@@ -265,15 +303,13 @@ function renderHomeScreen(data: { items: Item[]; suggestions: Suggestion[]; sett
       </div>
       <div class="suggestions-grid">
         ${Object.entries(itemsByCategory)
-          .map(
-            ([category, items]) => `
-          <div class="category-card">
-            <h3>${capitalizeFirst(category)}</h3>
-            <ul class="item-list">
-              ${items.map((item) => `<li><span class="item-type-badge ${item.type}">${item.type === "vegetable" ? "🥕" : "🍎"}</span> ${item.name}</li>`).join("")}
-            </ul>
-          </div>`
-          )
+          .map(([category, items]) => `
+            <div class="category-card">
+              <h3>${capitalizeFirst(category)}</h3>
+              <ul class="item-list">
+                ${items.map((item) => `<li><span class="item-type-badge ${item.type}">${item.type === "vegetable" ? "🥕" : "🍎"}</span> ${item.name}</li>`).join("")}
+              </ul>
+            </div>`)
           .join("")}
       </div>
     </div>
@@ -424,10 +460,12 @@ function attachEventListeners(data: { items: Item[]; suggestions: Suggestion[]; 
     });
   });
 
-  const generateBtn = document.querySelector(".btn-generate");
-  if (generateBtn) {
-    generateBtn.addEventListener("click", () => generateSuggestions());
-  }
+  document.querySelector(".btn-get-started")?.addEventListener("click", () => {
+    currentScreen = "manage";
+    render(data);
+  });
+
+  document.querySelector(".btn-generate")?.addEventListener("click", () => generateSuggestions());
 
   if (currentScreen === "manage") {
     document.getElementById("add-item-btn")?.addEventListener("click", () => showItemDialog());
