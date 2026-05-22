@@ -84,7 +84,6 @@ function subscribeToData(): void {
         $: {
           where: { "session.sessionId": localSessionId },
           order: { generatedAt: "desc" },
-          limit: 1,
         },
         items: {},
       },
@@ -160,6 +159,25 @@ async function generateSuggestions() {
     txs.push(db.tx.items[item.id].update({ lastSuggestedAt: now }));
     txs.push(db.tx.items[item.id].link({ suggestions: suggestionId }));
   });
+
+  await db.transact(txs);
+}
+
+async function deleteSuggestion(suggestion: Suggestion, allSuggestions: Suggestion[]) {
+  const remaining = allSuggestions.filter((s) => s.id !== suggestion.id);
+  const txs: any[] = [db.tx.suggestions[suggestion.id].delete()];
+
+  for (const item of suggestion.items || []) {
+    const otherSuggestions = remaining.filter((s) =>
+      s.items?.some((i) => i.id === item.id)
+    );
+    if (otherSuggestions.length === 0) {
+      txs.push(db.tx.items[item.id].update({ lastSuggestedAt: null } as any));
+    } else {
+      const mostRecent = Math.max(...otherSuggestions.map((s) => Number(s.generatedAt)));
+      txs.push(db.tx.items[item.id].update({ lastSuggestedAt: mostRecent }));
+    }
+  }
 
   await db.transact(txs);
 }
@@ -271,9 +289,9 @@ function renderHomeScreen(data: { items: Item[]; suggestions: Suggestion[]; sett
     `;
   }
 
-  const latestSuggestion = data.suggestions[0];
+  const [latest, ...past] = data.suggestions;
 
-  if (!latestSuggestion || !latestSuggestion.items?.length) {
+  if (!latest || !latest.items?.length) {
     return `
       <div class="home-screen">
         <div class="empty-state">
@@ -286,7 +304,7 @@ function renderHomeScreen(data: { items: Item[]; suggestions: Suggestion[]; sett
     `;
   }
 
-  const itemsByCategory = latestSuggestion.items.reduce((acc, item) => {
+  const itemsByCategory = latest.items.reduce((acc, item) => {
     if (!acc[item.category]) acc[item.category] = [];
     acc[item.category].push(item);
     return acc;
@@ -297,9 +315,12 @@ function renderHomeScreen(data: { items: Item[]; suggestions: Suggestion[]; sett
       <div class="suggestion-header">
         <div>
           <h2>Today's Shopping List</h2>
-          <p class="timestamp">Generated ${new Date(latestSuggestion.generatedAt).toLocaleString()}</p>
+          <p class="timestamp">Generated ${new Date(latest.generatedAt).toLocaleString()}</p>
         </div>
-        <button class="btn-primary btn-generate">Regenerate List</button>
+        <div class="suggestion-header-actions">
+          <button class="btn-primary btn-generate">Regenerate</button>
+          <button class="btn-danger btn-delete-suggestion" data-suggestion-id="${latest.id}">Delete List</button>
+        </div>
       </div>
       <div class="suggestions-grid">
         ${Object.entries(itemsByCategory)
@@ -312,6 +333,22 @@ function renderHomeScreen(data: { items: Item[]; suggestions: Suggestion[]; sett
             </div>`)
           .join("")}
       </div>
+
+      ${past.length > 0 ? `
+        <div class="history-section">
+          <h3>History</h3>
+          <div class="history-list">
+            ${past.map((s) => `
+              <div class="history-row">
+                <div class="history-info">
+                  <span class="history-date">${new Date(s.generatedAt).toLocaleDateString(undefined, { dateStyle: "medium" })}</span>
+                  <span class="history-items">${s.items?.length ?? 0} item${(s.items?.length ?? 0) === 1 ? "" : "s"}</span>
+                </div>
+                <button class="btn-danger btn-delete-suggestion" data-suggestion-id="${s.id}">Delete</button>
+              </div>`).join("")}
+          </div>
+        </div>
+      ` : ""}
     </div>
   `;
 }
@@ -466,6 +503,16 @@ function attachEventListeners(data: { items: Item[]; suggestions: Suggestion[]; 
   });
 
   document.querySelector(".btn-generate")?.addEventListener("click", () => generateSuggestions());
+
+  document.querySelectorAll(".btn-delete-suggestion").forEach((btn) => {
+    btn.addEventListener("click", (e) => {
+      const suggestionId = (e.currentTarget as HTMLElement).dataset.suggestionId!;
+      const suggestion = data.suggestions.find((s) => s.id === suggestionId)!;
+      if (confirm("Delete this list? Items in it will be eligible for re-suggestion.")) {
+        deleteSuggestion(suggestion, data.suggestions);
+      }
+    });
+  });
 
   if (currentScreen === "manage") {
     document.getElementById("add-item-btn")?.addEventListener("click", () => showItemDialog());

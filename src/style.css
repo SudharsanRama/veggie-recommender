@@ -110,6 +110,23 @@ main {
   box-shadow: var(--shadow-lg);
 }
 
+.btn-danger {
+  background: var(--surface);
+  color: var(--danger);
+  border: 2px solid var(--danger);
+  padding: 0.75rem 1.25rem;
+  border-radius: 8px;
+  font-size: 0.9rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.btn-danger:hover {
+  background: var(--danger);
+  color: white;
+}
+
 .btn-secondary {
   background: var(--surface);
   color: var(--text);
@@ -174,6 +191,61 @@ main {
   margin-bottom: 2rem;
   flex-wrap: wrap;
   gap: 1rem;
+}
+
+.suggestion-header-actions {
+  display: flex;
+  gap: 0.75rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+/* History */
+.history-section {
+  margin-top: 3rem;
+  border-top: 2px solid var(--border);
+  padding-top: 2rem;
+}
+
+.history-section h3 {
+  font-size: 1.25rem;
+  color: var(--text-secondary);
+  margin-bottom: 1rem;
+}
+
+.history-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.history-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: var(--surface);
+  border-radius: 8px;
+  padding: 0.875rem 1.25rem;
+  box-shadow: var(--shadow);
+}
+
+.history-info {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+
+.history-date {
+  font-weight: 500;
+  color: var(--text);
+}
+
+.history-items {
+  font-size: 0.875rem;
+  color: var(--text-secondary);
+  background: var(--bg);
+  padding: 0.2rem 0.6rem;
+  border-radius: 6px;
 }
 
 .suggestion-header h2 {
