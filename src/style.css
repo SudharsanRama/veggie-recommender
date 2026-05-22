@@ -526,10 +526,13 @@ input:checked + .slider:before {
 
 /* Dialog */
 dialog {
+  margin: auto;
   border: none;
   border-radius: var(--radius);
   padding: 2rem;
-  min-width: 400px;
+  min-width: 440px;
+  min-height: 520px;
+  overflow: visible;
   box-shadow: var(--shadow-lg);
 }
 
@@ -571,6 +574,93 @@ dialog input[type="number"]:focus,
 dialog select:focus {
   outline: none;
   border-color: var(--primary);
+}
+
+/* Category group (dropdown + help) */
+.category-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  font-weight: 500;
+}
+
+.category-group.hidden {
+  display: none;
+}
+
+.category-label-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.field-label {
+  font-weight: 500;
+}
+
+.help-wrapper {
+  position: relative;
+}
+
+.btn-help {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  border: 2px solid var(--text-secondary);
+  background: none;
+  color: var(--text-secondary);
+  font-size: 0.7rem;
+  font-weight: 700;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  line-height: 1;
+  transition: all 0.2s;
+  flex-shrink: 0;
+}
+
+.btn-help:hover {
+  border-color: var(--primary);
+  color: var(--primary);
+}
+
+.category-help-popup {
+  position: absolute;
+  left: 0;
+  bottom: calc(100% + 8px);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-lg);
+  padding: 0.75rem;
+  width: 280px;
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.category-help-popup.hidden {
+  display: none;
+}
+
+.help-item {
+  display: flex;
+  gap: 0.5rem;
+  font-size: 0.8rem;
+  line-height: 1.4;
+}
+
+.help-item strong {
+  min-width: 56px;
+  color: var(--primary);
+  font-weight: 600;
+}
+
+.help-item span {
+  color: var(--text-secondary);
 }
 
 .dialog-actions {
@@ -772,6 +862,8 @@ dialog select:focus {
 
   dialog {
     min-width: auto;
+    min-height: auto;
     width: 90vw;
+    overflow: visible;
   }
 }

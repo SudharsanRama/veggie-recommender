@@ -9,6 +9,7 @@ type Settings = InstaQLEntity<AppSchema, "settings">;
 
 const SESSION_KEY = "veggie_session_id";
 const SESSION_TTL_DAYS = 30;
+const FRUIT_CATEGORY = "produce";
 
 // UI state
 let currentScreen: "home" | "manage" | "settings" = "home";
@@ -208,6 +209,19 @@ async function updateSettings(itemsPerCategory: number, cooldownDays: number) {
     await db.transact(
       db.tx.settings[settings[0].id].update({ itemsPerCategory, cooldownDays, updatedAt: Date.now() })
     );
+  }
+}
+
+function updateCategoryGroupVisibility(type: string) {
+  const group = document.getElementById("category-group");
+  const select = document.getElementById("item-category") as HTMLSelectElement | null;
+  if (!group || !select) return;
+  if (type === "fruit") {
+    group.classList.add("hidden");
+    select.removeAttribute("required");
+  } else {
+    group.classList.remove("hidden");
+    select.setAttribute("required", "");
   }
 }
 
@@ -431,10 +445,37 @@ function renderManageScreen(data: { items: Item[]; suggestions: Suggestion[]; se
             <option value="fruit">Fruit</option>
           </select>
         </label>
-        <label>
-          Category
-          <input type="text" id="item-category" required placeholder="e.g., leafy, root, citrus">
-        </label>
+        <div class="category-group" id="category-group">
+          <div class="category-label-row">
+            <span class="field-label">Category</span>
+            <div class="help-wrapper">
+              <button type="button" class="btn-help" id="category-help-btn">?</button>
+              <div class="category-help-popup hidden" id="category-help-popup">
+                <div class="help-item"><strong>Bulbs</strong><span>Fleshy base — garlic, onion, leek</span></div>
+                <div class="help-item"><strong>Flowers</strong><span>Edible heads — broccoli, cauliflower</span></div>
+                <div class="help-item"><strong>Fruits</strong><span>Fleshy with seeds — tomatoes, capsicum, cucumber</span></div>
+                <div class="help-item"><strong>Fungi</strong><span>Mushrooms — button, shiitake, oyster</span></div>
+                <div class="help-item"><strong>Leaves</strong><span>Leafy parts — spinach, lettuce, cabbage</span></div>
+                <div class="help-item"><strong>Roots</strong><span>Taproots — carrots, beetroot, radish</span></div>
+                <div class="help-item"><strong>Seeds</strong><span>Legumes — beans, peas, corn</span></div>
+                <div class="help-item"><strong>Stems</strong><span>Edible stalks — asparagus, celery</span></div>
+                <div class="help-item"><strong>Tubers</strong><span>Underground — potatoes, kumara, yam</span></div>
+              </div>
+            </div>
+          </div>
+          <select id="item-category" required>
+            <option value="">Select a category...</option>
+            <option value="bulbs">Bulbs</option>
+            <option value="flowers">Flowers</option>
+            <option value="fruits">Fruits</option>
+            <option value="fungi">Fungi</option>
+            <option value="leaves">Leaves</option>
+            <option value="roots">Roots</option>
+            <option value="seeds">Seeds</option>
+            <option value="stems">Stems</option>
+            <option value="tubers">Tubers</option>
+          </select>
+        </div>
         <div class="dialog-actions">
           <button type="button" class="btn-secondary" id="cancel-btn">Cancel</button>
           <button type="submit" class="btn-primary">Save</button>
@@ -553,12 +594,28 @@ function attachEventListeners(data: { items: Item[]; suggestions: Suggestion[]; 
     const dialog = document.getElementById("item-dialog") as HTMLDialogElement;
     document.getElementById("cancel-btn")?.addEventListener("click", () => dialog.close());
 
+    document.getElementById("item-type")?.addEventListener("change", (e) => {
+      updateCategoryGroupVisibility((e.target as HTMLSelectElement).value);
+    });
+
+    const helpBtn = document.getElementById("category-help-btn");
+    const helpPopup = document.getElementById("category-help-popup");
+    helpBtn?.addEventListener("click", (e) => {
+      e.stopPropagation();
+      helpPopup?.classList.toggle("hidden");
+      if (!helpPopup?.classList.contains("hidden")) {
+        document.addEventListener("click", () => helpPopup?.classList.add("hidden"), { once: true });
+      }
+    });
+
     document.getElementById("item-form")?.addEventListener("submit", async (e) => {
       e.preventDefault();
       const editId = (document.getElementById("edit-item-id") as HTMLInputElement).value;
       const name = (document.getElementById("item-name") as HTMLInputElement).value;
       const type = (document.getElementById("item-type") as HTMLSelectElement).value;
-      const category = (document.getElementById("item-category") as HTMLInputElement).value;
+      const category = type === "fruit"
+        ? FRUIT_CATEGORY
+        : (document.getElementById("item-category") as HTMLSelectElement).value;
 
       if (editId) {
         await updateItem(data.items.find((i) => i.id === editId)!, { name, type, category });
@@ -585,8 +642,16 @@ function showItemDialog(item?: Item) {
   (document.getElementById("dialog-title")!).textContent = item ? "Edit Item" : "Add Item";
   (document.getElementById("edit-item-id") as HTMLInputElement).value = item?.id ?? "";
   (document.getElementById("item-name") as HTMLInputElement).value = item?.name ?? "";
-  (document.getElementById("item-type") as HTMLSelectElement).value = item?.type ?? "vegetable";
-  (document.getElementById("item-category") as HTMLInputElement).value = item?.category ?? "";
+
+  const type = item?.type ?? "vegetable";
+  (document.getElementById("item-type") as HTMLSelectElement).value = type;
+
+  updateCategoryGroupVisibility(type);
+
+  if (type !== "fruit") {
+    (document.getElementById("item-category") as HTMLSelectElement).value = item?.category ?? "";
+  }
+
   dialog.showModal();
 }
 
